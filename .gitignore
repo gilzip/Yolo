@@ -1,0 +1,29 @@
+.venv/
+__pycache__/
+*.pyc
+*.log
+
+# Model weights (downloaded on first run)
+models/*.pt
+models/roboflow_*/
+
+# Generated outputs
+outputs/annotated/*
+outputs/crops/*
+outputs/json/*
+!outputs/annotated/.gitkeep
+!outputs/crops/.gitkeep
+!outputs/json/.gitkeep
+
+uploads/*
+!uploads/.gitkeep
+
+# POS onboarding dataset (captured images, catalog, and generated YOLO dataset)
+dataset/images/*
+dataset/yolo/
+dataset/products.json
+models/pos_finetune/
+models/pos_custom.pt
+
+# POS completed-order receipts
+orders/*.json

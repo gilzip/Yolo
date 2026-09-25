@@ -1,0 +1,14 @@
+ultralytics>=8.3.0
+opencv-python>=4.9.0
+pillow>=10.2.0
+roboflow>=1.1.0
+torch>=2.2.0
+torchvision>=0.17.0
+pydantic>=2.6.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# Smart Retail POS desktop app (pos_app/)
+PyQt5>=5.15.9
+pyzbar>=0.1.9

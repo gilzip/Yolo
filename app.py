@@ -246,6 +246,32 @@ async def index() -> HTMLResponse:
                     font-weight: 700;
                 }
                 .hidden { display: none; }
+                .camera-frame {
+                    position: relative;
+                    display: inline-block;
+                    width: 100%;
+                }
+                .camera-guide {
+                    position: absolute;
+                    top: 12%;
+                    left: 20%;
+                    width: 60%;
+                    height: 76%;
+                    border: 3px dashed rgba(45,212,191,0.85);
+                    border-radius: 12px;
+                    pointer-events: none;
+                    box-shadow: 0 0 0 999px rgba(0,0,0,0.35);
+                }
+                .camera-guide::after {
+                    content: 'Center the product in this frame';
+                    position: absolute;
+                    bottom: -28px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    white-space: nowrap;
+                    font-size: 0.8rem;
+                    color: var(--accent);
+                }
                 @media (max-width: 900px) {
                     .panel-grid, .two-col { grid-template-columns: 1fr; }
                 }
@@ -294,7 +320,10 @@ async def index() -> HTMLResponse:
                     <div class="panel" style="grid-column: 1 / -1;">
                         <h3>Or capture with your webcam</h3>
                         <p class="muted">Uses the barcode / name / price fields above. Re-using an existing barcode adds these photos to that product instead of replacing it — this is how you add more training images to a product you already onboarded.</p>
-                        <video id="learning-video" autoplay playsinline muted style="width:100%;max-width:480px;border-radius:10px;background:#000;display:block;"></video>
+                        <div class="camera-frame" style="max-width:480px;">
+                            <video id="learning-video" autoplay playsinline muted style="width:100%;border-radius:10px;background:#000;display:block;"></video>
+                            <div class="camera-guide"></div>
+                        </div>
                         <div class="two-col" style="margin-top:12px;">
                             <button id="learning-camera-toggle" type="button">Start Camera</button>
                             <button id="learning-capture-burst" type="button" class="secondary">Capture 12 Photos</button>
@@ -314,7 +343,10 @@ async def index() -> HTMLResponse:
                     <div class="panel-grid">
                         <div class="panel">
                             <h2>Checkout scan</h2>
-                            <video id="checkout-video" autoplay playsinline muted style="width:100%;border-radius:10px;background:#000;display:block;"></video>
+                            <div class="camera-frame">
+                                <video id="checkout-video" autoplay playsinline muted style="width:100%;border-radius:10px;background:#000;display:block;"></video>
+                                <div class="camera-guide"></div>
+                            </div>
                             <div class="stack" style="margin-top:12px;">
                                 <button id="checkout-camera-toggle" type="button">Start Camera (live scan)</button>
                                 <input id="barcode-input" type="text" placeholder="Barcode or product name" />

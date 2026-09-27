@@ -218,6 +218,9 @@ async def index() -> HTMLResponse:
                     border-radius: 10px;
                     align-items: center;
                 }
+                .catalog-item {
+                    grid-template-columns: 48px 1fr auto auto;
+                }
                 .thumb {
                     width: 48px;
                     height: 48px;
@@ -388,13 +391,27 @@ async def index() -> HTMLResponse:
                 const sections = { learning: document.getElementById('learning'), catalog: document.getElementById('catalog'), checkout: document.getElementById('checkout') };
                 let trainingPollHandle = null;
 
-                tabs.forEach((tab) => {
-                    tab.addEventListener('click', () => {
-                        tabs.forEach(t => t.classList.toggle('active', t === tab));
-                        Object.entries(sections).forEach(([name, el]) => {
-                            el.classList.toggle('hidden', name !== tab.dataset.tab);
-                        });
+                function switchTab(name) {
+                    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+                    Object.entries(sections).forEach(([sectionName, el]) => {
+                        el.classList.toggle('hidden', sectionName !== name);
                     });
+                }
+
+                tabs.forEach((tab) => {
+                    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+                });
+
+                document.getElementById('catalog-list').addEventListener('click', (event) => {
+                    const btn = event.target.closest('.add-photos-btn');
+                    if (!btn) return;
+                    document.getElementById('product-barcode').value = btn.dataset.barcode;
+                    document.getElementById('product-name').value = btn.dataset.name;
+                    document.getElementById('product-price').value = btn.dataset.price;
+                    switchTab('learning');
+                    document.getElementById('learning-status').textContent =
+                        `Ready to add more photos for ${btn.dataset.name} (${btn.dataset.barcode}) — start the camera below or bulk-import files.`;
+                    document.getElementById('learning-camera-toggle').scrollIntoView({ behavior: 'smooth', block: 'center' });
                 });
 
                 // ---- Shared webcam helpers (used by both Learning and Checkout) ----
@@ -430,13 +447,14 @@ async def index() -> HTMLResponse:
                             const items = data.products || {};
                             const rows = Object.values(items);
                             list.innerHTML = rows.length ? rows.map(item => `
-                                <div class="item">
+                                <div class="item catalog-item">
                                     <div class="thumb">${item.front_image_url ? `<img src="${item.front_image_url}" alt="${item.name}" style="width:100%;height:100%;object-fit:cover;border-radius:9px;">` : '#'}</div>
                                     <div>
                                         <strong>${item.name || item.barcode}</strong><br>
                                         <span class="muted">${item.barcode} &middot; ${item.image_count || 0} training images</span>
                                     </div>
                                     <div><strong>₪${Number(item.price || 0).toFixed(2)}</strong></div>
+                                    <button type="button" class="secondary add-photos-btn" data-barcode="${item.barcode}" data-name="${(item.name || '').replace(/"/g, '&quot;')}" data-price="${item.price || 0}">Add photos</button>
                                 </div>
                             `).join('') : '<div class="muted">No products added yet.</div>';
                         })

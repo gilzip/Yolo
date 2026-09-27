@@ -6,6 +6,7 @@ __pycache__/
 # Model weights (downloaded on first run)
 models/*.pt
 models/roboflow_*/
+/yolo11*.pt
 
 # Generated outputs
 outputs/annotated/*
@@ -27,3 +28,6 @@ models/pos_custom.pt
 
 # POS completed-order receipts
 orders/*.json
+
+# Background training job logs (started by the browser UI's /train-model, or ad-hoc runs)
+*training_log.txt

@@ -44,6 +44,12 @@ CONSISTENCY_FRAMES = int(os.getenv("POS_CONSISTENCY_FRAMES", "5"))
 COOLDOWN_SECONDS = float(os.getenv("POS_COOLDOWN_SECONDS", "3.0"))
 THUMBNAIL_SIZE = 56
 
+# Detections below the cart-adding threshold but above this floor are shown
+# as clickable "possible match" suggestions instead of being discarded.
+# Shared between the desktop Checkout screen and the browser UI.
+SUGGESTION_MIN_CONFIDENCE = float(os.getenv("POS_SUGGESTION_MIN_CONFIDENCE", "0.10"))
+MAX_SUGGESTIONS = int(os.getenv("POS_MAX_SUGGESTIONS", "3"))
+
 # Custom fine-tuned model (produced by train_yolo.py). Its class names are
 # expected to be product barcodes. Falls back to the root project's generic
 # COCO/Roboflow model when this file doesn't exist yet.

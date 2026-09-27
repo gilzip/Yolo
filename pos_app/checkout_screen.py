@@ -34,7 +34,13 @@ from PyQt5.QtWidgets import (
 
 from pos_app.camera_worker import CameraWorker
 from pos_app.cart import ShoppingCart
-from pos_app.config import CAMERA_INDEX, POS_CONFIDENCE_THRESHOLD, THUMBNAIL_SIZE
+from pos_app.config import (
+    CAMERA_INDEX,
+    MAX_SUGGESTIONS,
+    POS_CONFIDENCE_THRESHOLD,
+    SUGGESTION_MIN_CONFIDENCE,
+    THUMBNAIL_SIZE,
+)
 from pos_app.dataset_utils import get_catalog, get_product, record_checkout_training_sample
 from pos_app.orders import save_order
 from pos_app.pos_detector import load_checkout_detector
@@ -51,14 +57,6 @@ except ImportError:  # pragma: no cover - non-Windows platforms get a silent no-
 
     def _beep() -> None:
         pass
-
-
-# Detections below the cart-adding threshold but above this floor are shown
-# as clickable "possible match" suggestions instead of being discarded.
-SUGGESTION_MIN_CONFIDENCE = 0.10
-
-# Show at most this many suggestion buttons at once, ranked by confidence.
-MAX_SUGGESTIONS = 3
 
 
 def _bgr_to_pixmap(image: np.ndarray, size: int | None = None) -> QPixmap:

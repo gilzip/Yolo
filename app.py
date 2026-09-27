@@ -330,6 +330,16 @@ async def index() -> HTMLResponse:
                         </div>
                         <div id="learning-camera-status" class="status"></div>
                     </div>
+
+                    <div class="panel" style="grid-column: 1 / -1;">
+                        <h3>Or bulk-import existing photos</h3>
+                        <p class="muted">Select several photos already on disk, named <code>&lt;barcode&gt;.&lt;number&gt;.jpg</code> (e.g. <code>7290000504278.1.jpg</code>, <code>7290000504278.2.jpg</code>). The barcode is read from the filename, so photos for several products can be selected together. A barcode not yet in the catalog is created with a placeholder name/price — re-save it once through the form above to fill those in.</p>
+                        <div class="stack">
+                            <input id="bulk-import-files" type="file" accept="image/*" multiple />
+                            <button id="bulk-import-btn" type="button" class="secondary">Import selected photos</button>
+                        </div>
+                        <div id="bulk-import-status" class="status"></div>
+                    </div>
                 </div>
 
                 <div id="catalog" class="panel hidden">
@@ -539,6 +549,34 @@ async def index() -> HTMLResponse:
                         await new Promise((r) => setTimeout(r, 350));
                     }
                     statusEl.textContent = `Captured ${totalShots} photos for barcode ${barcode}.`;
+                    renderCatalogList();
+                });
+
+                document.getElementById('bulk-import-btn').addEventListener('click', async () => {
+                    const statusEl = document.getElementById('bulk-import-status');
+                    const input = document.getElementById('bulk-import-files');
+                    const fileList = input.files;
+                    if (!fileList || fileList.length === 0) {
+                        statusEl.textContent = 'Choose one or more photos first.';
+                        return;
+                    }
+
+                    const formData = new FormData();
+                    for (const f of fileList) formData.append('files', f, f.name);
+
+                    statusEl.textContent = `Uploading ${fileList.length} photo(s)…`;
+                    const response = await fetch('/catalog/bulk-import', { method: 'POST', body: formData });
+                    const data = await response.json();
+
+                    const okCount = data.results.filter(r => r.status === 'ok').length;
+                    const errors = data.results.filter(r => r.status === 'error');
+                    const perProduct = Object.entries(data.products_touched || {}).map(([bc, count]) => `${bc}: ${count} images`).join(', ');
+                    let summary = `Imported ${okCount}/${fileList.length} photo(s). ${perProduct ? 'Now: ' + perProduct + '.' : ''}`;
+                    if (errors.length) {
+                        summary += ` Skipped ${errors.length}: ` + errors.map(e => `${e.filename} (${e.message})`).join('; ');
+                    }
+                    statusEl.textContent = summary;
+                    input.value = '';
                     renderCatalogList();
                 });
 
@@ -789,6 +827,70 @@ async def add_catalog_item(
         "price": float(price),
         "image_count": product["image_count"] if product else 1,
     }
+
+
+_ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+@app.post("/catalog/bulk-import")
+async def bulk_import_catalog_photos(files: list[UploadFile] = File(...)) -> dict:
+    """Import already-taken photos whose filenames encode their product.
+
+    Expects each filename in the form `<barcode>.<anything>.<ext>` (e.g.
+    `7290000504278.1.jpg`, `7290000504278.2.jpg`) — the barcode is read from
+    the part before the first dot, and the middle part is just there to keep
+    filenames unique on disk; it isn't otherwise used since each photo gets
+    its own sequential `img_N` name via `next_capture_index`. This lets a
+    whole folder of pre-taken photos for one or more products be dropped in
+    at once, instead of capturing through the live camera.
+
+    A barcode that isn't in the catalog yet is created with a placeholder
+    name (the barcode itself) and price 0 — re-submit it through the normal
+    "Save product" form (name + barcode + price + one photo) to fill those
+    in; `register_product` merges rather than overwrites, so that won't
+    duplicate the photos already imported here.
+    """
+    results = []
+    touched: dict[str, int] = {}
+
+    for upload in files:
+        filename = upload.filename or ""
+        parts = filename.split(".")
+        if len(parts) < 3:
+            results.append({"filename": filename, "status": "error", "message": "Expected <barcode>.<number>.<ext>"})
+            await upload.close()
+            continue
+
+        barcode = parts[0].strip()
+        suffix = f".{parts[-1].lower()}"
+        if not barcode:
+            results.append({"filename": filename, "status": "error", "message": "Missing barcode in filename"})
+            await upload.close()
+            continue
+        if suffix not in _ALLOWED_IMAGE_SUFFIXES:
+            results.append({"filename": filename, "status": "error", "message": f"Unsupported extension {suffix}"})
+            await upload.close()
+            continue
+
+        image_bytes = await upload.read()
+        await upload.close()
+        image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None or image.size == 0:
+            results.append({"filename": filename, "status": "error", "message": "Not a readable image"})
+            continue
+
+        target_dir = DATASET_IMAGES_DIR / barcode
+        target_dir.mkdir(parents=True, exist_ok=True)
+        index = next_capture_index(barcode)
+        image_path = target_dir / f"img_{index}{suffix}"
+        image_path.write_bytes(image_bytes)
+
+        register_product(barcode=barcode, name="", price=0.0, image_paths=[image_path])
+        product = get_product(barcode)
+        touched[barcode] = product["image_count"] if product else touched.get(barcode, 0) + 1
+        results.append({"filename": filename, "status": "ok", "barcode": barcode, "saved_as": image_path.name})
+
+    return {"results": results, "products_touched": touched}
 
 
 @app.post("/checkout/detect")

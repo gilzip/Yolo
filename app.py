@@ -6,9 +6,11 @@ Run with:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -336,7 +338,7 @@ async def index() -> HTMLResponse:
 
                     <div class="panel" style="grid-column: 1 / -1;">
                         <h3>Or bulk-import existing photos</h3>
-                        <p class="muted">Select several photos already on disk, named <code>&lt;barcode&gt;.&lt;number&gt;.jpg</code> (e.g. <code>7290000504278.1.jpg</code>, <code>7290000504278.2.jpg</code>). The barcode is read from the filename, so photos for several products can be selected together. A barcode not yet in the catalog is created with a placeholder name/price — re-save it once through the form above to fill those in.</p>
+                        <p class="muted">Select several photos already on disk, named by barcode — e.g. <code>7290104261251.jpg</code>, or <code>7290000504278_1.jpg</code> / <code>7290000504278_2.jpg</code> for several photos of one product. The barcode is read from the filename, so photos for several products can be selected together. A barcode not yet in the catalog is created with a placeholder name/price — re-save it once through the form above to fill those in.</p>
                         <div class="stack">
                             <input id="bulk-import-files" type="file" accept="image/*" multiple />
                             <button id="bulk-import-btn" type="button" class="secondary">Import selected photos</button>
@@ -848,47 +850,56 @@ async def add_catalog_item(
 
 
 _ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+_DUPLICATE_SUFFIX_RE = re.compile(r"\s*\(\d+\)$")
+
+
+def _parse_bulk_filename(filename: str) -> tuple[str, str] | None:
+    """Read a product barcode out of a bulk-import filename.
+
+    Accepts several conventions seen in real product-photo exports:
+      <barcode>.<ext>                e.g. 7290104261251.jpg
+      <barcode>_<n>.<ext>             e.g. 5011321333253_1.jpg (multiple photos)
+      <barcode>.<n>.<ext>             e.g. 7290000504278.1.jpg (this app's own capture naming)
+      <barcode> (1).<ext>             Windows "keep both files" duplicate suffix, on any of the above
+
+    Returns (barcode, lowercased extension with dot) or None if the
+    extension isn't a supported image type.
+    """
+    path = Path(filename)
+    suffix = path.suffix.lower()
+    if suffix not in _ALLOWED_IMAGE_SUFFIXES:
+        return None
+    stem = _DUPLICATE_SUFFIX_RE.sub("", path.stem)
+    barcode = stem.split(".")[0].split("_")[0].strip()
+    return (barcode, suffix) if barcode else None
 
 
 @app.post("/catalog/bulk-import")
 async def bulk_import_catalog_photos(files: list[UploadFile] = File(...)) -> dict:
     """Import already-taken photos whose filenames encode their product.
 
-    Expects each filename in the form `<barcode>.<anything>.<ext>` (e.g.
-    `7290000504278.1.jpg`, `7290000504278.2.jpg`) — the barcode is read from
-    the part before the first dot, and the middle part is just there to keep
-    filenames unique on disk; it isn't otherwise used since each photo gets
-    its own sequential `img_N` name via `next_capture_index`. This lets a
-    whole folder of pre-taken photos for one or more products be dropped in
-    at once, instead of capturing through the live camera.
-
-    A barcode that isn't in the catalog yet is created with a placeholder
-    name (the barcode itself) and price 0 — re-submit it through the normal
-    "Save product" form (name + barcode + price + one photo) to fill those
-    in; `register_product` merges rather than overwrites, so that won't
-    duplicate the photos already imported here.
+    See `_parse_bulk_filename` for the accepted naming conventions — this
+    lets a whole folder of pre-taken photos for one or more products be
+    dropped in at once, instead of capturing through the live camera.
+    Byte-identical files (e.g. Windows duplicate downloads) are only saved
+    once. A barcode that isn't in the catalog yet is created with a
+    placeholder name (the barcode itself) and price 0 — re-submit it
+    through the normal "Save product" form (name + barcode + price + one
+    photo) to fill those in; `register_product` merges rather than
+    overwrites, so that won't duplicate the photos already imported here.
     """
     results = []
     touched: dict[str, int] = {}
+    seen_hashes: dict[str, set[str]] = {}
 
     for upload in files:
         filename = upload.filename or ""
-        parts = filename.split(".")
-        if len(parts) < 3:
-            results.append({"filename": filename, "status": "error", "message": "Expected <barcode>.<number>.<ext>"})
+        parsed = _parse_bulk_filename(filename)
+        if parsed is None:
+            results.append({"filename": filename, "status": "error", "message": "Unrecognized filename — expected <barcode>[._]<n>.<ext>"})
             await upload.close()
             continue
-
-        barcode = parts[0].strip()
-        suffix = f".{parts[-1].lower()}"
-        if not barcode:
-            results.append({"filename": filename, "status": "error", "message": "Missing barcode in filename"})
-            await upload.close()
-            continue
-        if suffix not in _ALLOWED_IMAGE_SUFFIXES:
-            results.append({"filename": filename, "status": "error", "message": f"Unsupported extension {suffix}"})
-            await upload.close()
-            continue
+        barcode, suffix = parsed
 
         image_bytes = await upload.read()
         await upload.close()
@@ -896,6 +907,12 @@ async def bulk_import_catalog_photos(files: list[UploadFile] = File(...)) -> dic
         if image is None or image.size == 0:
             results.append({"filename": filename, "status": "error", "message": "Not a readable image"})
             continue
+
+        content_hash = hashlib.sha256(image_bytes).hexdigest()
+        if content_hash in seen_hashes.get(barcode, set()):
+            results.append({"filename": filename, "status": "skipped", "barcode": barcode, "message": "Duplicate of another file in this batch"})
+            continue
+        seen_hashes.setdefault(barcode, set()).add(content_hash)
 
         target_dir = DATASET_IMAGES_DIR / barcode
         target_dir.mkdir(parents=True, exist_ok=True)

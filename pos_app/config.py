@@ -54,3 +54,14 @@ MAX_SUGGESTIONS = int(os.getenv("POS_MAX_SUGGESTIONS", "3"))
 # expected to be product barcodes. Falls back to the root project's generic
 # COCO/Roboflow model when this file doesn't exist yet.
 CUSTOM_MODEL_PATH = MODELS_DIR / os.getenv("POS_CUSTOM_MODEL", "pos_custom.pt")
+
+# ---------------------------------------------------------------------------
+# Vector (embedding) recognition — an alternative to the trained YOLO
+# classifier that matches a scanned photo against the catalog by nearest
+# neighbor instead of a fixed set of learned classes. No training/fine-tuning
+# step is needed: a barcode is searchable as soon as it has at least one
+# photo, which is the main thing the classifier struggles with.
+# ---------------------------------------------------------------------------
+EMBEDDINGS_PATH = DATASET_DIR / "embeddings.npz"
+VECTOR_SIMILARITY_THRESHOLD = float(os.getenv("POS_VECTOR_SIMILARITY_THRESHOLD", "0.65"))
+VECTOR_TOP_K = int(os.getenv("POS_VECTOR_TOP_K", "5"))

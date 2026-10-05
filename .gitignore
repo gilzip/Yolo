@@ -23,6 +23,7 @@ uploads/*
 dataset/images/*
 dataset/yolo/
 dataset/products.json
+dataset/embeddings.npz
 models/pos_finetune/
 models/pos_custom.pt
 

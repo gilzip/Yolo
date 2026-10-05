@@ -23,6 +23,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from config import BASE_DIR, OUTPUT_DIR, UPLOADS_DIR
 from detector import DetectorInferenceError, DetectorInitError, RetailProductDetector
@@ -32,7 +33,10 @@ from pos_app.config import (
     MAX_SUGGESTIONS,
     POS_CONFIDENCE_THRESHOLD,
     SUGGESTION_MIN_CONFIDENCE,
+    VECTOR_SIMILARITY_THRESHOLD,
+    VECTOR_TOP_K,
 )
+from pos_app.embeddings import build_catalog_embeddings, compute_embedding, find_nearest
 from pos_app.dataset_utils import (
     get_catalog,
     get_product,
@@ -974,6 +978,56 @@ async def checkout_detect(file: UploadFile = File(...)) -> dict:
 
     candidates.sort(key=lambda c: c["confidence"], reverse=True)
     return {"detections": candidates[: MAX_SUGGESTIONS + 2], "using_custom_model": live_detector.using_custom_model}
+
+
+@app.post("/catalog/rebuild-embeddings")
+async def rebuild_catalog_embeddings() -> dict:
+    """(Re)compute vector embeddings for every photo in the catalog.
+
+    Unlike `/train-model`, this doesn't fine-tune anything — it's a plain
+    feature-extraction pass, cheap enough to run synchronously (seconds to
+    low tens of seconds for a few hundred photos) and safe to call again
+    after every onboarding/bulk-import so `/checkout/detect-vector` sees new
+    products immediately, no 30-epoch wait required.
+    """
+    return await run_in_threadpool(build_catalog_embeddings)
+
+
+@app.post("/checkout/detect-vector")
+async def checkout_detect_vector(file: UploadFile = File(...)) -> dict:
+    """Recognize a scanned photo by nearest-neighbor similarity, not classification.
+
+    Complements `/checkout/detect` (the trained YOLO classifier): this
+    matches against whatever photos exist in the catalog right now, so a
+    barcode with a single reference photo is searchable immediately, with no
+    retraining step. Run `/catalog/rebuild-embeddings` at least once first
+    (and again after adding photos) to populate the vector index.
+    """
+    image_bytes = await file.read()
+    await file.close()
+    image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None or image.size == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is not a readable image.")
+
+    def _search() -> list[dict]:
+        query = compute_embedding(image)
+        return find_nearest(query, top_k=VECTOR_TOP_K)
+
+    matches = await run_in_threadpool(_search)
+
+    results = []
+    for match in matches:
+        product = get_product(match["barcode"])
+        results.append(
+            {
+                "barcode": match["barcode"],
+                "name": product["name"] if product else match["barcode"],
+                "price": product["price"] if product else 0.0,
+                "similarity": round(match["similarity"], 4),
+                "is_confident": match["similarity"] >= VECTOR_SIMILARITY_THRESHOLD,
+            }
+        )
+    return {"matches": results}
 
 
 @app.post("/checkout/add")

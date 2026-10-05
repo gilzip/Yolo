@@ -36,7 +36,7 @@ from pos_app.config import (
     VECTOR_SIMILARITY_THRESHOLD,
     VECTOR_TOP_K,
 )
-from pos_app.embeddings import build_catalog_embeddings, compute_embedding, find_nearest
+from pos_app.embeddings import build_catalog_embeddings, compute_embedding, find_nearest, get_all_vectors
 from pos_app.dataset_utils import (
     get_catalog,
     get_product,
@@ -59,6 +59,10 @@ app = FastAPI(
 app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 app.mount("/product-images", StaticFiles(directory=str(DATASET_IMAGES_DIR)), name="product-images")
+
+STATIC_DIR = BASE_DIR / "static"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 detector: RetailProductDetector | None = None
 
@@ -388,9 +392,21 @@ async def index() -> HTMLResponse:
                                 <button id="clear-cart-btn" type="button" class="danger">Clear Cart</button>
                             </div>
                         </div>
+
+                        <div class="panel" style="grid-column: 1 / -1;">
+                            <h3>Client-side vector scan (experimental)</h3>
+                            <p class="muted">Runs entirely in your browser (ONNX Runtime Web) once the model and catalog vectors are loaded — no server round-trip per scan. Uses the live camera above if it's running, otherwise the file picked in "Analyze shelf image". Read-only: does not add to the cart, just shows what it would match.</p>
+                            <div class="stack">
+                                <button id="vector-scan-btn" type="button" class="secondary">Scan with client-side vectors</button>
+                                <div id="vector-scan-status" class="status">Not loaded yet — click the button to load the model (one-time, a few MB).</div>
+                                <div id="vector-scan-results" class="product-list"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
+
+            <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 
             <script>
                 const tabs = document.querySelectorAll('.tab');
@@ -443,6 +459,111 @@ async def index() -> HTMLResponse:
                     canvas.height = videoEl.videoHeight;
                     canvas.getContext('2d').drawImage(videoEl, 0, 0);
                     return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+                }
+
+                // ---- Client-side vector scan (experimental): model + catalog vectors run entirely in the browser ----
+                const VECTOR_INPUT_SIZE = 224;
+                const VECTOR_MEAN = [0.485, 0.456, 0.406];
+                const VECTOR_STD = [0.229, 0.224, 0.225];
+                let vectorSession = null;
+                let vectorCatalog = null;  // [{barcode, name, price, vector: Float32Array}]
+
+                async function ensureVectorModelLoaded(statusEl) {
+                    if (vectorSession && vectorCatalog) return;
+                    ort.env.wasm.numThreads = 1;  // avoid needing cross-origin-isolation headers for threaded WASM
+
+                    statusEl.textContent = 'Loading model (one-time, a few MB)…';
+                    if (!vectorSession) {
+                        vectorSession = await ort.InferenceSession.create('/static/embedder.onnx');
+                    }
+                    if (!vectorCatalog) {
+                        statusEl.textContent = 'Loading catalog vectors…';
+                        const data = await (await fetch('/catalog/embeddings.json')).json();
+                        vectorCatalog = data.items.map(item => ({ ...item, vector: Float32Array.from(item.vector) }));
+                    }
+                    statusEl.textContent = `Model and ${vectorCatalog.length} catalog vectors loaded.`;
+                }
+
+                function canvasFromSource(sourceEl) {
+                    const canvas = document.createElement('canvas');
+                    const w = sourceEl.videoWidth || sourceEl.naturalWidth || sourceEl.width;
+                    const h = sourceEl.videoHeight || sourceEl.naturalHeight || sourceEl.height;
+                    canvas.width = w;
+                    canvas.height = h;
+                    canvas.getContext('2d').drawImage(sourceEl, 0, 0, w, h);
+                    return canvas;
+                }
+
+                function preprocessForVectorModel(canvas) {
+                    const small = document.createElement('canvas');
+                    small.width = VECTOR_INPUT_SIZE;
+                    small.height = VECTOR_INPUT_SIZE;
+                    small.getContext('2d').drawImage(canvas, 0, 0, VECTOR_INPUT_SIZE, VECTOR_INPUT_SIZE);
+                    const { data } = small.getContext('2d').getImageData(0, 0, VECTOR_INPUT_SIZE, VECTOR_INPUT_SIZE);
+
+                    const chw = new Float32Array(3 * VECTOR_INPUT_SIZE * VECTOR_INPUT_SIZE);
+                    const plane = VECTOR_INPUT_SIZE * VECTOR_INPUT_SIZE;
+                    for (let i = 0; i < plane; i++) {
+                        chw[i] = (data[i * 4] / 255 - VECTOR_MEAN[0]) / VECTOR_STD[0];
+                        chw[plane + i] = (data[i * 4 + 1] / 255 - VECTOR_MEAN[1]) / VECTOR_STD[1];
+                        chw[2 * plane + i] = (data[i * 4 + 2] / 255 - VECTOR_MEAN[2]) / VECTOR_STD[2];
+                    }
+                    return new ort.Tensor('float32', chw, [1, 3, VECTOR_INPUT_SIZE, VECTOR_INPUT_SIZE]);
+                }
+
+                function l2Normalize(vec) {
+                    let sumSq = 0;
+                    for (let i = 0; i < vec.length; i++) sumSq += vec[i] * vec[i];
+                    const norm = Math.sqrt(sumSq) || 1;
+                    const out = new Float32Array(vec.length);
+                    for (let i = 0; i < vec.length; i++) out[i] = vec[i] / norm;
+                    return out;
+                }
+
+                function cosineSimilarity(a, b) {
+                    let dot = 0;
+                    for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+                    return dot;
+                }
+
+                async function runVectorScan(sourceEl) {
+                    const statusEl = document.getElementById('vector-scan-status');
+                    const resultsEl = document.getElementById('vector-scan-results');
+                    try {
+                        await ensureVectorModelLoaded(statusEl);
+                    } catch (err) {
+                        statusEl.textContent = 'Failed to load model/catalog: ' + err.message;
+                        return;
+                    }
+
+                    const t0 = performance.now();
+                    const canvas = canvasFromSource(sourceEl);
+                    const inputTensor = preprocessForVectorModel(canvas);
+                    const output = await vectorSession.run({ image: inputTensor });
+                    const queryVec = l2Normalize(output.embedding.data);
+                    const elapsedMs = Math.round(performance.now() - t0);
+
+                    const bestPerBarcode = new Map();
+                    for (const item of vectorCatalog) {
+                        const sim = cosineSimilarity(queryVec, item.vector);
+                        const existing = bestPerBarcode.get(item.barcode);
+                        if (!existing || sim > existing.similarity) {
+                            bestPerBarcode.set(item.barcode, { barcode: item.barcode, name: item.name, price: item.price, similarity: sim });
+                        }
+                    }
+                    const ranked = [...bestPerBarcode.values()].sort((a, b) => b.similarity - a.similarity).slice(0, 5);
+
+                    statusEl.textContent = `Scanned in ${elapsedMs} ms (in-browser, no server round-trip).`;
+                    resultsEl.innerHTML = ranked.map(r => `
+                        <div class="item">
+                            <div class="thumb">${(r.name || r.barcode)[0]}</div>
+                            <div>
+                                <strong>${r.name || r.barcode}</strong><br>
+                                <span class="muted">${r.barcode} &middot; similarity ${r.similarity.toFixed(3)}</span>
+                            </div>
+                            <div><strong>₪${Number(r.price || 0).toFixed(2)}</strong></div>
+                        </div>
+                    `).join('');
                 }
 
                 function renderCatalogList() {
@@ -760,6 +881,24 @@ async def index() -> HTMLResponse:
                         : 'No confident match — check the suggestions below.';
                 });
 
+                document.getElementById('vector-scan-btn').addEventListener('click', async () => {
+                    const video = document.getElementById('checkout-video');
+                    const file = document.getElementById('file-input').files[0];
+                    const statusEl = document.getElementById('vector-scan-status');
+
+                    if (checkoutStream && video.videoWidth) {
+                        await runVectorScan(video);
+                    } else if (file) {
+                        const img = new Image();
+                        img.src = URL.createObjectURL(file);
+                        await img.decode();
+                        await runVectorScan(img);
+                        URL.revokeObjectURL(img.src);
+                    } else {
+                        statusEl.textContent = 'Start the live camera above, or choose a file in "Analyze shelf image" first.';
+                    }
+                });
+
                 renderCatalogList();
                 refreshCart();
             </script>
@@ -991,6 +1130,30 @@ async def rebuild_catalog_embeddings() -> dict:
     products immediately, no 30-epoch wait required.
     """
     return await run_in_threadpool(build_catalog_embeddings)
+
+
+@app.get("/catalog/embeddings.json")
+async def get_catalog_embeddings() -> dict:
+    """Serve the vector index for client-side (in-browser) nearest-neighbor search.
+
+    One entry per embedded photo (not deduped per product), mirroring what
+    `find_nearest` searches over server-side — the browser does the same
+    "best photo per barcode" ranking locally after computing its own query
+    embedding with the ONNX model at /static/embedder.onnx.
+    """
+    catalog = get_catalog()
+    items = []
+    for barcode, vector in get_all_vectors():
+        product = catalog.get(barcode)
+        items.append(
+            {
+                "barcode": barcode,
+                "name": product["name"] if product else barcode,
+                "price": product["price"] if product else 0.0,
+                "vector": vector.tolist(),
+            }
+        )
+    return {"vector_dim": items[0]["vector"].__len__() if items else 0, "items": items}
 
 
 @app.post("/checkout/detect-vector")

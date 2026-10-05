@@ -12,3 +12,8 @@ python-multipart>=0.0.9
 # Smart Retail POS desktop app (pos_app/)
 PyQt5>=5.15.9
 pyzbar>=0.1.9
+
+# Client-side vector recognition: exports pos_app/embeddings.py's model to
+# ONNX (python -m pos_app.export_onnx) for the browser to run directly
+onnx>=1.16.0
+onnxruntime>=1.18.0

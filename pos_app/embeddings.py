@@ -33,7 +33,9 @@ _catalog_barcodes: np.ndarray | None = None
 _catalog_vectors: np.ndarray | None = None
 
 
-def _get_model() -> torch.nn.Module:
+def get_model() -> torch.nn.Module:
+    """Return the shared embedder model, loading it (and its pretrained
+    weights, cached after the first download) on first use."""
     global _model
     if _model is None:
         logger.info("Loading MobileNetV3-Small for vector recognition (one-time download if not cached)")
@@ -52,7 +54,7 @@ def compute_embedding(image_bgr: np.ndarray) -> np.ndarray:
     tensor = TF.normalize(tensor, mean=_IMAGENET_MEAN, std=_IMAGENET_STD).unsqueeze(0)
 
     with torch.no_grad():
-        features = _get_model()(tensor)
+        features = get_model()(tensor)
 
     vector = features.squeeze(0).numpy().astype(np.float32)
     norm = np.linalg.norm(vector)
@@ -114,6 +116,17 @@ def invalidate_cache() -> None:
     """Force the next search to reload embeddings.npz from disk."""
     global _catalog_barcodes, _catalog_vectors
     _catalog_barcodes, _catalog_vectors = None, None
+
+
+def get_all_vectors() -> list[tuple[str, np.ndarray]]:
+    """Return every (barcode, vector) pair in the index — one per embedded photo.
+
+    Used to ship the whole table to a client (e.g. the browser) that wants
+    to run the nearest-neighbor search itself instead of calling the server
+    for every scan.
+    """
+    barcodes, vectors = _load_cached_embeddings()
+    return [(str(barcode), vector) for barcode, vector in zip(barcodes, vectors)]
 
 
 def find_nearest(query_embedding: np.ndarray, top_k: int = 5) -> list[dict]:

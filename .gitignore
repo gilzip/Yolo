@@ -8,6 +8,10 @@ models/*.pt
 models/roboflow_*/
 /yolo11*.pt
 
+# Exported ONNX model for the browser's client-side vector scan (regenerate
+# with `python -m pos_app.export_onnx`)
+static/embedder.onnx
+
 # Generated outputs
 outputs/annotated/*
 outputs/crops/*
